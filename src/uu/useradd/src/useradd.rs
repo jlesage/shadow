@@ -14,7 +14,6 @@
 //! directory and populate it from `/etc/skel`.
 
 use std::fmt;
-use std::io::Write as _;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
@@ -293,11 +292,17 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
 // ---------------------------------------------------------------------------
 
 /// Handle `useradd -D` -- print default values.
-fn cmd_defaults(_matches: &clap::ArgMatches) -> UResult<()> {
-    // Read login.defs for defaults.
-    let root = SysRoot::default();
-    let defs = LoginDefs::load(&root.login_defs_path())
+fn cmd_defaults(matches: &clap::ArgMatches) -> UResult<()> {
+    write_defaults(matches, &mut std::io::stdout().lock())
+}
+
+/// Load login.defs under `-R`, apply `-K` overrides, and write the `useradd -D` report.
+fn write_defaults(matches: &clap::ArgMatches, out: &mut dyn std::io::Write) -> UResult<()> {
+    let root_dir = matches.get_one::<String>(options::ROOT);
+    let root = SysRoot::new(root_dir.map(Path::new));
+    let mut defs = LoginDefs::load(&root.login_defs_path())
         .map_err(|e| UseraddError::CannotUpdatePasswd(format!("{e}")))?;
+    apply_login_defs_overrides(&mut defs, &parse_login_defs_overrides(matches)?);
 
     let default_home = defs.get("HOME").unwrap_or("/home");
     let default_inactive = defs.get("INACTIVE").unwrap_or("-1");
@@ -306,7 +311,6 @@ fn cmd_defaults(_matches: &clap::ArgMatches) -> UResult<()> {
     let default_skel = defs.get("SKEL").unwrap_or("/etc/skel");
     let default_create_mail = defs.get("CREATE_MAIL_SPOOL").unwrap_or("no");
 
-    let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "GROUP=100");
     let _ = writeln!(out, "HOME={default_home}");
     let _ = writeln!(out, "INACTIVE={default_inactive}");
@@ -1189,6 +1193,27 @@ mod tests {
             .try_get_matches_from(["useradd", "-D"])
             .expect("should parse -D without LOGIN");
         assert!(m.get_flag(options::DEFAULTS));
+    }
+
+    #[test]
+    fn test_clap_defaults_with_key() {
+        let m = uu_app()
+            .try_get_matches_from([
+                "useradd",
+                "-D",
+                "-K",
+                "HOME=/OVERRIDDEN",
+                "-K",
+                "SHELL=/bin/zsh",
+            ])
+            .expect("should parse -D -K");
+        assert!(m.get_flag(options::DEFAULTS));
+        let keys: Vec<&str> = m
+            .get_many::<String>(options::KEY)
+            .expect("KEY present")
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["HOME=/OVERRIDDEN", "SHELL=/bin/zsh"]);
     }
 
     #[test]
@@ -2229,6 +2254,40 @@ mod tests {
             .expect("clap accepts raw value");
         let err = parse_login_defs_overrides(&m).expect_err("empty key");
         assert!(matches!(err, UseraddError::BadArgument(_)));
+    }
+
+    #[test]
+    fn test_defaults_honors_key_overrides() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let etc = dir.path().join("etc");
+        fs::create_dir_all(&etc).expect("etc dir");
+        fs::write(etc.join("login.defs"), "HOME /home\nSHELL /bin/sh\n").expect("login.defs");
+
+        let root = dir.path().to_str().expect("utf-8 temp path");
+        let m = uu_app()
+            .try_get_matches_from([
+                "useradd",
+                "-R",
+                root,
+                "-D",
+                "-K",
+                "HOME=/OVERRIDDEN",
+                "-K",
+                "SHELL=/bin/zsh",
+            ])
+            .expect("parse -D -K");
+
+        let mut buf = Vec::new();
+        write_defaults(&m, &mut buf).expect("write defaults");
+        let output = String::from_utf8(buf).expect("utf-8 defaults output");
+        assert!(
+            output.lines().any(|l| l == "HOME=/OVERRIDDEN"),
+            "expected HOME override in -D output, got: {output}"
+        );
+        assert!(
+            output.lines().any(|l| l == "SHELL=/bin/zsh"),
+            "expected SHELL override in -D output, got: {output}"
+        );
     }
 
     #[test]

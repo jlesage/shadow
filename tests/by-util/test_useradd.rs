@@ -118,6 +118,31 @@ fn test_defaults_flag() {
 }
 
 #[test]
+fn test_defaults_flag_honors_key_overrides() {
+    if common::skip_unless_root() {
+        return;
+    }
+
+    let dir = setup_root_dir();
+    let code = run_with_root(
+        &dir,
+        &["-D", "-K", "HOME=/OVERRIDDEN", "-K", "SHELL=/bin/zsh"],
+    );
+    assert_eq!(code, 0, "useradd -D -K should exit 0");
+}
+
+#[test]
+fn test_defaults_flag_invalid_key_exits_error() {
+    if common::skip_unless_root() {
+        return;
+    }
+
+    let dir = setup_root_dir();
+    let code = run_with_root(&dir, &["-D", "-K", "UID_MIN"]);
+    assert_eq!(code, 3, "useradd -D with invalid KEY=VALUE should exit 3");
+}
+
+#[test]
 fn test_conflicting_create_no_create_home() {
     let code = run(&["useradd", "-m", "-M", "testuser"]);
     assert_eq!(code, 2, "-m -M conflict should exit 2");
