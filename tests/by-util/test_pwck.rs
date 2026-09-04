@@ -12,6 +12,21 @@
 
 use std::ffi::OsString;
 
+/// Run `pwck` as a child process with `--root DIR`.
+///
+/// Needs root: `chroot(2)` does, and the tool refuses `--root` for anyone
+/// else. Every test using this is guarded with `skip_unless_root`.
+///
+/// `--root` performs a real chroot(2), so it cannot be exercised in-process:
+/// the test binary itself would end up inside the tree, and every later test
+/// would fail looking for /tmp. pwck has no `--prefix`, matching GNU, so a
+/// child is the only way to reach these paths.
+fn pwck_rooted(dir: &tempfile::TempDir, args: &[&str]) -> crate::common::Output {
+    let mut cmd = crate::common::tool("pwck");
+    cmd.args(args).arg("--root").arg(dir.path());
+    crate::common::run_cmd(&mut cmd)
+}
+
 /// Run `uumain` with the given args, returning the exit code.
 fn run(args: &[&str]) -> i32 {
     let os_args: Vec<OsString> = args.iter().map(|s| (*s).into()).collect();
@@ -99,17 +114,7 @@ fn test_valid_files_exits_zero() {
     // Create the home directory that pwck checks for.
     std::fs::create_dir_all(dir.path().join("root")).expect("failed to create root home");
 
-    let passwd_path = dir.path().join("etc/passwd");
-    let shadow_path = dir.path().join("etc/shadow");
-
-    let code = run(&[
-        "pwck",
-        "-r",
-        "-R",
-        dir.path().to_str().expect("non-utf8 path"),
-        passwd_path.to_str().expect("non-utf8 path"),
-        shadow_path.to_str().expect("non-utf8 path"),
-    ]);
+    let code = pwck_rooted(&dir, &["-r", "/etc/passwd", "/etc/shadow"]).code;
     assert_eq!(code, 0, "consistent passwd+shadow should return 0");
 }
 
@@ -128,17 +133,7 @@ fn test_missing_shadow_entry() {
     std::fs::create_dir_all(dir.path().join("root")).expect("mkdir root");
     std::fs::create_dir_all(dir.path().join("home/alice")).expect("mkdir alice home");
 
-    let passwd_path = dir.path().join("etc/passwd");
-    let shadow_path = dir.path().join("etc/shadow");
-
-    let code = run(&[
-        "pwck",
-        "-r",
-        "-R",
-        dir.path().to_str().expect("non-utf8 path"),
-        passwd_path.to_str().expect("non-utf8 path"),
-        shadow_path.to_str().expect("non-utf8 path"),
-    ]);
+    let code = pwck_rooted(&dir, &["-r", "/etc/passwd", "/etc/shadow"]).code;
     assert_eq!(
         code, 2,
         "user in passwd but not shadow should be detected (exit 2)"
@@ -159,17 +154,7 @@ fn test_extra_shadow_entry() {
     );
     std::fs::create_dir_all(dir.path().join("root")).expect("mkdir root");
 
-    let passwd_path = dir.path().join("etc/passwd");
-    let shadow_path = dir.path().join("etc/shadow");
-
-    let code = run(&[
-        "pwck",
-        "-r",
-        "-R",
-        dir.path().to_str().expect("non-utf8 path"),
-        passwd_path.to_str().expect("non-utf8 path"),
-        shadow_path.to_str().expect("non-utf8 path"),
-    ]);
+    let code = pwck_rooted(&dir, &["-r", "/etc/passwd", "/etc/shadow"]).code;
     assert_eq!(
         code, 2,
         "entry in shadow but not passwd should be detected (exit 2)"
@@ -189,17 +174,7 @@ fn test_invalid_uid() {
         "root:x:0:\n",
     );
 
-    let passwd_path = dir.path().join("etc/passwd");
-    let shadow_path = dir.path().join("etc/shadow");
-
-    let code = run(&[
-        "pwck",
-        "-r",
-        "-R",
-        dir.path().to_str().expect("non-utf8 path"),
-        passwd_path.to_str().expect("non-utf8 path"),
-        shadow_path.to_str().expect("non-utf8 path"),
-    ]);
+    let code = pwck_rooted(&dir, &["-r", "/etc/passwd", "/etc/shadow"]).code;
     assert_eq!(
         code, 2,
         "non-numeric UID should be detected as invalid (exit 2)"
@@ -219,17 +194,7 @@ fn test_invalid_gid() {
         "root:x:0:\n",
     );
 
-    let passwd_path = dir.path().join("etc/passwd");
-    let shadow_path = dir.path().join("etc/shadow");
-
-    let code = run(&[
-        "pwck",
-        "-r",
-        "-R",
-        dir.path().to_str().expect("non-utf8 path"),
-        passwd_path.to_str().expect("non-utf8 path"),
-        shadow_path.to_str().expect("non-utf8 path"),
-    ]);
+    let code = pwck_rooted(&dir, &["-r", "/etc/passwd", "/etc/shadow"]).code;
     assert_eq!(
         code, 2,
         "non-numeric GID should be detected as invalid (exit 2)"
@@ -250,17 +215,7 @@ fn test_duplicate_username() {
     std::fs::create_dir_all(dir.path().join("home/alice")).expect("mkdir alice home");
     std::fs::create_dir_all(dir.path().join("home/alice2")).expect("mkdir alice2 home");
 
-    let passwd_path = dir.path().join("etc/passwd");
-    let shadow_path = dir.path().join("etc/shadow");
-
-    let code = run(&[
-        "pwck",
-        "-r",
-        "-R",
-        dir.path().to_str().expect("non-utf8 path"),
-        passwd_path.to_str().expect("non-utf8 path"),
-        shadow_path.to_str().expect("non-utf8 path"),
-    ]);
+    let code = pwck_rooted(&dir, &["-r", "/etc/passwd", "/etc/shadow"]).code;
     assert_eq!(code, 2, "duplicate username should be detected (exit 2)");
 }
 
@@ -285,7 +240,7 @@ fn test_duplicate_uid_is_not_an_error_but_a_duplicate_name_is() {
     let out = crate::common::run_cmd(
         crate::common::tool("pwck")
             .arg("-r")
-            .arg("-R")
+            .arg("--root")
             .arg(shared_uid.path()),
     );
     out.assert_code(0);
@@ -307,7 +262,7 @@ fn test_duplicate_uid_is_not_an_error_but_a_duplicate_name_is() {
     crate::common::run_cmd(
         crate::common::tool("pwck")
             .arg("-r")
-            .arg("-R")
+            .arg("--root")
             .arg(shared_name.path()),
     )
     .assert_code(2)
@@ -327,17 +282,7 @@ fn test_empty_username() {
         "users:x:1000:\n",
     );
 
-    let passwd_path = dir.path().join("etc/passwd");
-    let shadow_path = dir.path().join("etc/shadow");
-
-    let code = run(&[
-        "pwck",
-        "-r",
-        "-R",
-        dir.path().to_str().expect("non-utf8 path"),
-        passwd_path.to_str().expect("non-utf8 path"),
-        shadow_path.to_str().expect("non-utf8 path"),
-    ]);
+    let code = pwck_rooted(&dir, &["-r", "/etc/passwd", "/etc/shadow"]).code;
     assert_eq!(
         code, 2,
         "empty username should be detected as invalid (exit 2)"
@@ -357,17 +302,7 @@ fn test_missing_home_dir() {
     );
     // Deliberately do NOT create /home/nonexistent.
 
-    let passwd_path = dir.path().join("etc/passwd");
-    let shadow_path = dir.path().join("etc/shadow");
-
-    let code = run(&[
-        "pwck",
-        "-r",
-        "-R",
-        dir.path().to_str().expect("non-utf8 path"),
-        passwd_path.to_str().expect("non-utf8 path"),
-        shadow_path.to_str().expect("non-utf8 path"),
-    ]);
+    let code = pwck_rooted(&dir, &["-r", "/etc/passwd", "/etc/shadow"]).code;
     assert_eq!(
         code, 2,
         "missing home directory should be detected (exit 2)"
@@ -387,17 +322,7 @@ fn test_malformed_passwd_line() {
         "root:x:0:\n",
     );
 
-    let passwd_path = dir.path().join("etc/passwd");
-    let shadow_path = dir.path().join("etc/shadow");
-
-    let code = run(&[
-        "pwck",
-        "-r",
-        "-R",
-        dir.path().to_str().expect("non-utf8 path"),
-        passwd_path.to_str().expect("non-utf8 path"),
-        shadow_path.to_str().expect("non-utf8 path"),
-    ]);
+    let code = pwck_rooted(&dir, &["-r", "/etc/passwd", "/etc/shadow"]).code;
     assert_eq!(code, 2, "malformed passwd line should be detected (exit 2)");
 }
 
@@ -420,6 +345,9 @@ fn read_etc(dir: &tempfile::TempDir, name: &str) -> String {
 
 #[test]
 fn test_sort_with_parse_error_does_not_write() {
+    if crate::common::skip_unless_root() {
+        return;
+    }
     // A malformed line plus a comment and out-of-order entries: `-s` would
     // reorder and, on the old code, drop the comment and the unparsable line.
     let dir = setup_root(
@@ -430,10 +358,9 @@ fn test_sort_with_parse_error_does_not_write() {
         "z:!:19500::::::\na:!:19500::::::\n",
         "z:x:1000:\na:x:500:\n",
     );
-    let prefix = dir.path().to_str().unwrap();
     let before = read_etc(&dir, "passwd");
 
-    let code = run(&["pwck", "-s", "-R", prefix]);
+    let code = pwck_rooted(&dir, &["-s"]).code;
     assert_eq!(code, 2, "a parse error must make pwck exit 2");
     assert_eq!(
         read_etc(&dir, "passwd"),
@@ -444,18 +371,23 @@ fn test_sort_with_parse_error_does_not_write() {
 
 #[test]
 fn test_read_only_and_sort_conflict() {
+    if crate::common::skip_unless_root() {
+        return;
+    }
     let dir = setup_root(
         "root:x:0:0::/root:/bin/sh\n",
         "root:!:19500::::::\n",
         "root:x:0:\n",
     );
-    let prefix = dir.path().to_str().unwrap();
-    let code = run(&["pwck", "-r", "-s", "-R", prefix]);
+    let code = pwck_rooted(&dir, &["-r", "-s"]).code;
     assert_ne!(code, 0, "-r and -s cannot be combined");
 }
 
 #[test]
 fn test_sort_keeps_each_comment_with_its_entry() {
+    if crate::common::skip_unless_root() {
+        return;
+    }
     let dir = setup_root(
         "# top comment\n\
          z:x:3000:3000::/home/z:/bin/sh\n\
@@ -470,8 +402,7 @@ fn test_sort_keeps_each_comment_with_its_entry() {
     std::fs::create_dir_all(dir.path().join("home/z")).unwrap();
     std::fs::write(dir.path().join("etc/shells"), "/bin/sh\n").unwrap();
 
-    let prefix = dir.path().to_str().unwrap();
-    assert_eq!(run(&["pwck", "-s", "-R", prefix]), 0, "clean file sorts");
+    assert_eq!(pwck_rooted(&dir, &["-s"]).code, 0, "clean file sorts");
 
     assert_eq!(
         read_etc(&dir, "passwd"),
@@ -486,6 +417,9 @@ fn test_sort_keeps_each_comment_with_its_entry() {
 
 #[test]
 fn test_relative_home_and_shell_are_reported() {
+    if crate::common::skip_unless_root() {
+        return;
+    }
     // Resolving a relative path against pwck's working directory reported on
     // whatever happened to be there; the relative path is itself the fault.
     let dir = setup_root(
@@ -493,6 +427,5 @@ fn test_relative_home_and_shell_are_reported() {
         "rel:!:1::::::\n",
         "rel:x:1000:\n",
     );
-    let prefix = dir.path().to_str().unwrap();
-    assert_eq!(run(&["pwck", "-r", "-R", prefix]), 2);
+    assert_eq!(pwck_rooted(&dir, &["-r"]).code, 2);
 }
